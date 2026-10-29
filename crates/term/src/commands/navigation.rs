@@ -1,4 +1,4 @@
-//! Location jumps, jump history, and labeled word navigation.
+//! Location jumps, jump history, and labeled pattern navigation.
 
 use super::context::Context;
 use crate::{
@@ -6,17 +6,15 @@ use crate::{
     ui::{self, overlay::overlaid, Picker},
 };
 use editor_core::{
-    chars::char_is_word,
-    graphemes::{self, next_grapheme_boundary},
+    graphemes::{self, ensure_grapheme_boundary_next, next_grapheme_boundary},
     line_ending::line_end_char_index,
-    movement as core_movement,
     movement::{Direction, Movement},
     Range, Selection, Tendril,
 };
 use std::{borrow::Cow, num::NonZeroUsize, path::Path};
 use stdx::rope::RopeExt as _;
-use stdx::rope::RopeSliceExt;
 use text_layout::text_annotations::Overlay;
+use ui_core::{input::KeyEvent, keyboard::KeyModifiers};
 use view::{
     document::Mode,
     editor::Action,
@@ -359,37 +357,160 @@ pub(super) fn jumplist_picker(cx: &mut Context) {
     cx.push_layer(Box::new(overlaid(picker)));
 }
 
-pub(super) fn goto_word(cx: &mut Context) {
-    jump_to_word(cx, Movement::Move)
+pub(super) fn goto_pattern(cx: &mut Context) {
+    jump_to_pattern(cx, Movement::Move)
 }
 
-pub(super) fn extend_to_word(cx: &mut Context) {
-    jump_to_word(cx, Movement::Extend)
+pub(super) fn extend_to_pattern(cx: &mut Context) {
+    jump_to_pattern(cx, Movement::Extend)
 }
 
-fn jump_to_label(cx: &mut Context, labels: Vec<Range>, behaviour: Movement) {
-    let doc = doc!(cx.editor);
-    let alphabet = &cx.editor.config().jump_label_alphabet;
-    if labels.is_empty() {
+/// Read a two-character pattern, then jump to a labeled occurrence of it in the
+/// focused view, like Leap's `<Plug>(leap)`.
+fn jump_to_pattern(cx: &mut Context, behaviour: Movement) {
+    let alphabet = cx.editor.config().jump_label_alphabet.clone();
+    if alphabet.is_empty() {
         return;
     }
-    let alphabet_char = |i| {
-        let mut res = Tendril::new();
-        res.push(alphabet[i]);
-        res
-    };
+    let labels = label_chars(&alphabet);
+    let limit = labels.len() * labels.len();
 
-    // Add label for each jump candidate to the View as virtual text.
+    cx.on_next_key(move |cx, event| {
+        let Some(first) = plain_char(event) else {
+            return;
+        };
+        cx.on_next_key(move |cx, event| {
+            let Some(second) = plain_char(event) else {
+                return;
+            };
+            let targets = {
+                let (view, doc) = current_ref!(cx.editor);
+                find_pattern_targets(view, doc, first, second, limit)
+            };
+            jump_to_label(cx, targets, labels, behaviour);
+        });
+    });
+}
+
+/// Input characters for patterns and labels. Shortcuts are ignored, but Shift is
+/// kept because terminals report it for uppercase characters.
+fn plain_char(event: KeyEvent) -> Option<char> {
+    event.char().filter(|_| {
+        !event
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+    })
+}
+
+/// Characters used for single-key labels: the configured alphabet followed by
+/// its uppercase forms, so up to twice the alphabet size is reachable with one
+/// key. Characters without a distinct single-character uppercase are skipped.
+fn label_chars(alphabet: &[char]) -> Vec<char> {
+    let mut chars = alphabet.to_vec();
+    for &ch in alphabet {
+        let mut upper = ch.to_uppercase();
+        let (Some(upper), None) = (upper.next(), upper.next()) else {
+            continue;
+        };
+        if upper != ch && !chars.contains(&upper) {
+            chars.push(upper);
+        }
+    }
+    chars
+}
+
+fn label_text(label: char) -> Tendril {
+    let mut text = Tendril::new();
+    text.push(label);
+    text
+}
+
+/// Label every target and jump to the one the user picks. A lone target is
+/// jumped to directly, like Leap does. Targets that fit in the single-key label
+/// set are picked with one key; beyond that two-character labels are used.
+fn jump_to_label(
+    cx: &mut Context,
+    mut targets: Vec<Range>,
+    labels: Vec<char>,
+    behaviour: Movement,
+) {
+    if targets.is_empty() || labels.is_empty() {
+        return;
+    }
+    if targets.len() == 1 {
+        jump_to_target(cx, targets[0], behaviour);
+        return;
+    }
+
+    if targets.len() > labels.len() {
+        // Two-character labels replace both matched characters, so a match that
+        // ends on a line ending has no room for the second label.
+        let text = doc!(cx.editor).text().slice(..);
+        targets.retain(|target| {
+            text.get_char_at(target.from() + 1)
+                .is_none_or(|ch| !is_line_ending(ch))
+        });
+    }
+
+    match targets.len() {
+        0 => {}
+        1 => jump_to_target(cx, targets[0], behaviour),
+        len if len <= labels.len() => jump_to_single_label(cx, targets, labels, behaviour),
+        _ => jump_to_double_label(cx, targets, labels, behaviour),
+    }
+}
+
+/// Label each target with one character and jump when that key is pressed.
+fn jump_to_single_label(
+    cx: &mut Context,
+    targets: Vec<Range>,
+    labels: Vec<char>,
+    behaviour: Movement,
+) {
+    let mut overlays: Vec<_> = targets
+        .iter()
+        .zip(&labels)
+        .map(|(target, &label)| Overlay::new(target.from(), label_text(label)))
+        .collect();
+    overlays.sort_unstable_by_key(|overlay| overlay.char_idx);
+    let (view, doc) = current!(cx.editor);
+    doc.set_jump_labels(view.id, overlays);
+    let view_id = view.id;
+    let doc = doc.id();
+
+    cx.on_next_key(move |cx, event| {
+        doc_mut!(cx.editor, &doc).remove_jump_labels(view_id);
+        let Some(label) = plain_char(event) else {
+            return;
+        };
+        let Some(index) = labels.iter().position(|&candidate| candidate == label) else {
+            return;
+        };
+        if let Some(target) = targets.get(index).copied() {
+            jump_to_target(cx, target, behaviour);
+        }
+    });
+}
+
+/// Label each target with two characters and jump once both are pressed.
+fn jump_to_double_label(
+    cx: &mut Context,
+    targets: Vec<Range>,
+    labels: Vec<char>,
+    behaviour: Movement,
+) {
+    let label_count = labels.len();
+    let doc = doc!(cx.editor);
     let text = doc.text().slice(..);
-    let mut overlays: Vec<_> = labels
+    let mut overlays: Vec<_> = targets
         .iter()
         .enumerate()
-        .flat_map(|(i, range)| {
+        .flat_map(|(i, target)| {
             [
-                Overlay::new(range.from(), alphabet_char(i / alphabet.len())),
+                Overlay::new(target.from(), label_text(labels[i / label_count])),
                 Overlay::new(
-                    graphemes::next_grapheme_boundary(text, range.from()),
-                    alphabet_char(i % alphabet.len()),
+                    next_grapheme_boundary(text, target.from()),
+                    label_text(labels[i % label_count]),
                 ),
             ]
         })
@@ -397,174 +518,139 @@ fn jump_to_label(cx: &mut Context, labels: Vec<Range>, behaviour: Movement) {
     overlays.sort_unstable_by_key(|overlay| overlay.char_idx);
     let (view, doc) = current!(cx.editor);
     doc.set_jump_labels(view.id, overlays);
-
-    // Accept two characters matching a visible label. Jump to the candidate
-    // for that label if it exists.
-    let primary_selection = doc.selection(view.id).primary();
     let view_id = view.id;
     let doc = doc.id();
+
     cx.on_next_key(move |cx, event| {
-        let alphabet = &cx.editor.config().jump_label_alphabet;
-        let Some(i) = event
-            .char()
-            .filter(|_| event.modifiers.is_empty())
-            .and_then(|ch| alphabet.iter().position(|&it| it == ch))
-        else {
+        let Some(first) = plain_char(event) else {
             doc_mut!(cx.editor, &doc).remove_jump_labels(view_id);
             return;
         };
-        let outer = i * alphabet.len();
-        // Bail if the given character cannot be a jump label.
-        if outer > labels.len() {
+        let Some(first_index) = labels.iter().position(|&label| label == first) else {
+            doc_mut!(cx.editor, &doc).remove_jump_labels(view_id);
+            return;
+        };
+        let outer = first_index * label_count;
+        if outer >= targets.len() {
             doc_mut!(cx.editor, &doc).remove_jump_labels(view_id);
             return;
         }
         cx.on_next_key(move |cx, event| {
             doc_mut!(cx.editor, &doc).remove_jump_labels(view_id);
-            let alphabet = &cx.editor.config().jump_label_alphabet;
-            let Some(inner) = event
-                .char()
-                .filter(|_| event.modifiers.is_empty())
-                .and_then(|ch| alphabet.iter().position(|&it| it == ch))
-            else {
+            let Some(second) = plain_char(event) else {
                 return;
             };
-            if let Some(mut range) = labels.get(outer + inner).copied() {
-                range = if behaviour == Movement::Extend {
-                    let anchor = if range.anchor < range.head {
-                        let from = primary_selection.from();
-                        if range.anchor < from {
-                            range.anchor
-                        } else {
-                            from
-                        }
-                    } else {
-                        let to = primary_selection.to();
-                        if range.anchor > to {
-                            range.anchor
-                        } else {
-                            to
-                        }
-                    };
-                    Range::new(anchor, range.head)
-                } else {
-                    range.with_direction(Direction::Forward)
-                };
-                let doc = doc_mut!(cx.editor, &doc);
-                let view = view_mut!(cx.editor, view_id);
-                push_jump(view, doc);
-                doc.set_selection(view_id, range.into());
+            let Some(inner) = labels.iter().position(|&label| label == second) else {
+                return;
+            };
+            if let Some(target) = targets.get(outer + inner).copied() {
+                jump_to_target(cx, target, behaviour);
             }
         });
     });
 }
 
-fn jump_to_word(cx: &mut Context, behaviour: Movement) {
-    // Calculate the jump candidates: ranges for any visible words with two or
-    // more characters.
-    let alphabet = &cx.editor.config().jump_label_alphabet;
-    if alphabet.is_empty() {
-        return;
-    }
-
-    let jump_label_limit = alphabet.len() * alphabet.len();
-    let mut words = Vec::with_capacity(jump_label_limit);
-    let (view, doc) = current_ref!(cx.editor);
+/// Positions where `first` is followed by `second` in the focused view. Only
+/// matches whose two characters are fully on screen are kept, nearest to the
+/// cursor first so the easiest labels land on the closest matches.
+fn find_pattern_targets(
+    view: &View,
+    doc: &Document,
+    first: char,
+    second: char,
+    limit: usize,
+) -> Vec<Range> {
     let text = doc.text().slice(..);
-    let layout = view.layout(doc, None);
-
     // This is not necessarily exact if there is virtual text like soft wrap.
-    // It's ok though because the extra jump labels will not be rendered.
+    // The layout check below trims the extra candidates.
     let start = text.line_to_char_idx(text.char_to_line_idx(doc.view_offset(view.id).anchor));
     let end = text.line_to_char_idx(view.estimate_last_doc_line(doc) + 1);
+    let layout = view.layout(doc, None);
+    let cursor = layout.display_position_at_pos(doc.selection(view.id).primary().cursor(text));
 
-    let primary_selection = doc.selection(view.id).primary();
-    let cursor = primary_selection.cursor(text);
-    let mut cursor_fwd = Range::point(cursor);
-    let mut cursor_rev = Range::point(cursor);
-    if text.get_char_at(cursor).is_some_and(|c| !c.is_whitespace()) {
-        let cursor_word_end = core_movement::move_next_word_end(text, cursor_fwd, 1);
-        //  single grapheme words need a special case
-        if cursor_word_end.anchor == cursor {
-            cursor_fwd = cursor_word_end;
+    let mut targets: Vec<(usize, Range)> = Vec::with_capacity(limit);
+    let mut pos = start;
+    while pos + 1 < end && targets.len() < limit {
+        // Folded text is not drawn, so matches inside it cannot be labeled.
+        if let Some(conceal) = layout.annotations.conceal_at(pos) {
+            pos = conceal.range.end.max(pos + 1);
+            continue;
         }
-        let cursor_word_start = core_movement::move_prev_word_start(text, cursor_rev, 1);
-        if cursor_word_start.anchor == next_grapheme_boundary(text, cursor) {
-            cursor_rev = cursor_word_start;
+        let (Some(leading), Some(trailing)) = (text.get_char_at(pos), text.get_char_at(pos + 1))
+        else {
+            pos += 1;
+            continue;
+        };
+        // A label replaces the matched character, so a match cannot start on a
+        // line ending.
+        if !chars_match(leading, first)
+            || !chars_match(trailing, second)
+            || is_line_ending(leading)
+            || ensure_grapheme_boundary_next(text, pos) != pos
+        {
+            pos += 1;
+            continue;
         }
+
+        // Labels only make sense for matches that are fully visible. A match
+        // ending on a line ending is visible with its start, even though the
+        // line ending itself has no usable cell.
+        let Some(start_pos) = layout.display_position_at_pos(pos) else {
+            pos += 2;
+            continue;
+        };
+        let end_visible = is_line_ending(trailing)
+            || layout
+                .display_position_at_pos(pos + 1)
+                .is_some_and(|next| next.row == start_pos.row);
+        if end_visible {
+            let distance = cursor.map_or(0, |cursor| {
+                let rows = cursor.row.abs_diff(start_pos.row);
+                let cols = cursor.col.abs_diff(start_pos.col);
+                rows * rows + cols * cols
+            });
+            targets.push((
+                distance,
+                Range::new(pos, next_grapheme_boundary(text, pos + 1)),
+            ));
+        }
+        // Occurrences do not overlap, matching Leap's repeated search.
+        pos += 2;
     }
-    'outer: loop {
-        let mut changed = false;
-        while cursor_fwd.head < end {
-            cursor_fwd = core_movement::move_next_word_end(text, cursor_fwd, 1);
-            if let Some(conceal) = layout.annotations.conceal_at(cursor_fwd.cursor(text)) {
-                cursor_fwd = Range::point(conceal.range.end);
-                continue;
-            }
-            // The cursor is on a word that is atleast two graphemes long and
-            // madeup of word characters. The latter condition is needed because
-            // move_next_word_end simply treats a sequence of characters from
-            // the same char class as a word so `=<` would also count as a word.
-            let add_label = text
-                .slice_chars(..cursor_fwd.head)
-                .graphemes_rev()
-                .take(2)
-                .take_while(|g| g.chars().all(char_is_word))
-                .count()
-                == 2;
-            if !add_label {
-                continue;
-            }
-            changed = true;
-            // skip any leading whitespace
-            cursor_fwd.anchor += text
-                .chars_at_char(cursor_fwd.anchor)
-                .take_while(|&c| !char_is_word(c))
-                .count();
-            words.push(cursor_fwd);
-            if words.len() == jump_label_limit {
-                break 'outer;
-            }
-            break;
-        }
-        while cursor_rev.head > start {
-            cursor_rev = core_movement::move_prev_word_start(text, cursor_rev, 1);
-            if let Some(conceal) = layout.annotations.conceal_at(cursor_rev.cursor(text)) {
-                cursor_rev = Range::point(conceal.range.start);
-                continue;
-            }
-            // The cursor is on a word that is atleast two graphemes long and
-            // madeup of word characters. The latter condition is needed because
-            // move_prev_word_start simply treats a sequence of characters from
-            // the same char class as a word so `=<` would also count as a word.
-            let add_label = text
-                .slice_chars(cursor_rev.head..)
-                .graphemes()
-                .take(2)
-                .take_while(|g| g.chars().all(char_is_word))
-                .count()
-                == 2;
-            if !add_label {
-                continue;
-            }
-            changed = true;
-            cursor_rev.anchor -= text
-                .chars_at_char(cursor_rev.anchor)
-                .reversed()
-                .take_while(|&c| !char_is_word(c))
-                .count();
-            words.push(cursor_rev);
-            if words.len() == jump_label_limit {
-                break 'outer;
-            }
-            break;
-        }
-        if !changed {
-            break;
-        }
+
+    targets.sort_by_key(|(distance, _)| *distance);
+    targets.into_iter().map(|(_, range)| range).collect()
+}
+
+/// A whitespace pattern character matches any whitespace, so a typed space can
+/// also reach tabs and line endings; other characters compare case-insensitively.
+fn chars_match(candidate: char, pattern: char) -> bool {
+    if pattern.is_whitespace() {
+        candidate.is_whitespace()
+    } else {
+        candidate == pattern || candidate.to_lowercase().eq(pattern.to_lowercase())
     }
-    drop(layout);
-    jump_to_label(cx, words, behaviour)
+}
+
+fn is_line_ending(ch: char) -> bool {
+    matches!(ch, '\n' | '\r')
+}
+
+fn jump_to_target(cx: &mut Context, target: Range, behaviour: Movement) {
+    let (view, doc) = current!(cx.editor);
+    let selection = if behaviour == Movement::Extend {
+        let anchor = doc.selection(view.id).primary().anchor;
+        let head = if anchor <= target.from() {
+            target.to()
+        } else {
+            target.from()
+        };
+        Range::new(anchor, head)
+    } else {
+        Range::point(target.from())
+    };
+    push_jump(view, doc);
+    doc.set_selection(view.id, selection.into());
 }
 
 /// A command prompt owns its preview until it is confirmed or cancelled.
@@ -701,5 +787,30 @@ pub(super) mod typed {
         super::goto_line_preview(cx.editor, NonZeroUsize::new(line));
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::label_chars;
+
+    #[test]
+    fn single_key_labels_extend_the_alphabet_with_uppercase() {
+        let alphabet: Vec<char> = ('a'..='z').collect();
+        let labels = label_chars(&alphabet);
+        assert_eq!(52, labels.len());
+        assert_eq!(('a'..='z').collect::<Vec<_>>(), labels[..26].to_vec());
+        assert_eq!('A', labels[26]);
+        assert_eq!('Z', labels[51]);
+    }
+
+    #[test]
+    fn single_key_labels_skip_characters_without_a_distinct_uppercase() {
+        assert_eq!(vec!['1', 'a', 'A'], label_chars(&['1', 'a']));
+    }
+
+    #[test]
+    fn single_key_labels_stay_unique() {
+        assert_eq!(vec!['a', 'A'], label_chars(&['a', 'A']));
     }
 }

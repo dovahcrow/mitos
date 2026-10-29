@@ -135,7 +135,7 @@ For common examples, see [Configure Mitos](./editor.md).
 | `breadcrumb` | table | See below | Breadcrumb navigation bar. See [`[editor.breadcrumb]`](#editorbreadcrumb). |
 | `indent-guides` | table | See below | Vertical indentation guides. See [`[editor.indent-guides]`](#editorindent-guides). |
 | `soft-wrap` | table | See below | Soft wrapping. See [`[editor.soft-wrap]`](#editorsoft-wrap). |
-| `jump-label-alphabet` | string of unique characters | `"abcdefghijklmnopqrstuvwxyz"` | Alphabet used to generate two-character jump labels. Earlier characters are used first. |
+| `jump-label-alphabet` | string of unique characters | `"abcdefghijklmnopqrstuvwxyz"` | Alphabet used to generate jump labels. Each label is one character; uppercase forms label the remaining matches, and beyond that labels grow to two characters. Earlier characters are used first. |
 | `inline-blame` | table | See below | Git blame rendered at the end of buffer lines. See [`[editor.inline-blame]`](#editorinline-blame). |
 | `diff` | table | `engine = "line"` | Review comparison engine: `line`, `syntax`, or `auto`. See [syntax-aware review](./version-control.md#syntax-aware-review). |
 | `workspace-trust` | table | See below | Implicit workspace trust policy. See [`[editor.workspace-trust]`](#editorworkspace-trust). |

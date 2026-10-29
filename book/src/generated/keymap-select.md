@@ -162,7 +162,7 @@
 | `` g. `` | Goto last modification | `` goto_last_modification `` |
 | `` g<minus> `` | Move backward in history | `` earlier `` |
 | `` g+ `` | Move forward in history | `` later `` |
-| `` gw `` | Extend to a two-character label | `` extend_to_word `` |
+| `` gw `` | Extend to a two-character pattern | `` extend_to_pattern `` |
 
 ### `` m `` — Match
 

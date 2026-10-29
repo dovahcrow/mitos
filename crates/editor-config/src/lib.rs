@@ -424,7 +424,7 @@ pub struct Config {
     /// Vertical indent width guides.
     pub indent_guides: IndentGuidesConfig,
     pub soft_wrap: SoftWrap,
-    /// labels characters used in jumpmode
+    /// Characters used to generate jump labels.
     #[serde(
         serialize_with = "serialize_alphabet",
         deserialize_with = "deserialize_alphabet"

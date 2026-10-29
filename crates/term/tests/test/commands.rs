@@ -8,6 +8,7 @@ use view::{
 use super::*;
 
 mod insert;
+mod label_jump;
 mod movement;
 mod replace;
 mod reverse_selection_contents;

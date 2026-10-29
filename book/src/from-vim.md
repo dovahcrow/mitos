@@ -28,7 +28,7 @@ Replacement text is literal; `$1` does not expand a regex capture. See
 | Alternate file | `Ctrl-^` | `ga` |
 
 Unlike Vim, `f`, `F`, `t`, and `T` can search across line boundaries.
-Mitos's `gw` displays labels at words: type a label to jump to that word.
+Mitos's `gw` labels the visible matches of two typed characters: type the pattern, then the label shown on a match, to jump there. A space matches any whitespace.
 
 ## Line Deletes
 

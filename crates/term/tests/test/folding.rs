@@ -129,8 +129,7 @@ async fn folding_is_independent_between_splits_of_the_same_document() -> anyhow:
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn word_jump_labels_skip_hidden_words_without_exhausting_the_alphabet() -> anyhow::Result<()>
-{
+async fn pattern_jump_skips_hidden_matches_without_exhausting_labels() -> anyhow::Result<()> {
     let mut config = super::helpers::test_config();
     config.editor.jump_label_alphabet = vec!['a', 'b'];
     let mut app = AppBuilder::new()
@@ -141,7 +140,7 @@ async fn word_jump_labels_skip_hidden_words_without_exhausting_the_alphabet() ->
         ))
         .with_lang_loader(language::syntax::Loader::default())
         .build()?;
-    keys(&mut app, "zfsgwaa").await?;
+    keys(&mut app, "zfsgwwo").await?;
     let (view, doc) = current_ref!(app.editor);
     assert_eq!(doc.cursor_line(view.id), 102);
     assert_eq!(doc.folded_ranges(view.id).len(), 1);

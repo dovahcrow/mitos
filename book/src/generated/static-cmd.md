@@ -381,8 +381,8 @@
 | `record_macro` | Record macro | normal: `` Q ``, select: `` Q `` |
 | `replay_macro` | Replay macro | normal: `` q ``, select: `` q `` |
 | `command_palette` | Open command palette | normal: `` <space>? ``, select: `` <space>? `` |
-| `goto_word` | Jump to a two-character label | normal: `` gw `` |
-| `extend_to_word` | Extend to a two-character label | select: `` gw `` |
+| `goto_pattern` | Jump to a two-character pattern | normal: `` gw `` |
+| `extend_to_pattern` | Extend to a two-character pattern | select: `` gw `` |
 | `snippet_picker` | Choose and insert a user-defined snippet |  |
 | `snippet_next_choice` | Choose the next snippet placeholder value |  |
 | `snippet_previous_choice` | Choose the previous snippet placeholder value |  |

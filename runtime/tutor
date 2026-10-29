@@ -1045,26 +1045,30 @@ lines.
 
 
 =================================================================
-=             9.4 JUMP WITH TWO-CHARACTER LABELS                =
+=                9.4 TWO-CHARACTER PATTERN JUMP                 =
 =================================================================
 
- Typing gw enables the 2-character labels. The start of each word
- will be replaced by 2 highlighted characters. You can then type
- any sequence of 2 highlighted characters to jump to the
- corresponding label, or use ESC to drop the labels.
+ Typing gw starts a 2-character pattern jump. Type two
+ characters, and Mitos labels each visible match with one
+ highlighted character, replacing the first matched character.
+ Type that label to jump to the match, or press ESC to drop the
+ labels. A single match jumps immediately.
 
- The 2-character labels allow you to quickly jump to any location
- in the viewable selection.
+ Matching ignores case, so "he" also matches "He" or "HE". A
+ space matches any whitespace, including a line ending.
+
+ When more matches are visible than letters, uppercase letters
+ label the rest; past that, labels grow to two characters.
 
  1. Move the cursor to the start of the line marked '-->' below.
- 2. Press gw to enable the 2-character labels, and then the two
-    characters that replace the two letters 'he' at the start of
-    'here' to jump to the corresponding word.
+ 2. Press gw, then type "he" to label its matches.
+ 3. Type the character shown in place of the "h" in "here" on the
+    last line to jump there.
 
  --> This is just a simple line of text.
      There may be many such lines
      But you really want to jump here!
-     This is fast with the 2-character labels.
+     This is fast with the jump labels.
 
 =================================================================
 =                        CHAPTER 9 RECAP                        =
@@ -1079,8 +1083,8 @@ lines.
    * Press Ctrl-i and Ctrl-o to go forward and backward in the
      jumplist.
 
- * Type gw to enable 2-character labels, and any 2 characters to
-   jump to the corresponding label, or ESC to drop the labels.
+ * Type gw and then two characters to label their matches, and
+   type a label to jump to that match. ESC drops the labels.
 
 
 
